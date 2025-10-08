@@ -43,6 +43,7 @@ dependencies = [
  "arrow",
  "bytes",
  "criterion",
+ "fastlanes",
  "rand",
 ]
 

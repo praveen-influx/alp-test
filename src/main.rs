@@ -1,6 +1,6 @@
 use alp_test::{gorilla, TestDataGenerator, compression_ratio, verify_bit_exact_equality,
-                calculate_alp_compressed_size, calculate_alp_compressed_size_detailed,
-                calculate_alprd_compressed_size, count_exceptions};
+                compress_alp_with_ffor, compress_alprd_with_bitpacking,
+                calculate_alp_compressed_size_detailed, count_exceptions};
 use alp::{encode, RDEncoder};
 use std::time::Instant;
 
@@ -65,21 +65,21 @@ fn main() {
 
         // Classic ALP compression
         let (_exponents, encoded, _exceptions_pos, exceptions) = encode(&data, None);
-        let alp_size = calculate_alp_compressed_size(&encoded, &exceptions);
-        let alp_ratio = compression_ratio(original_size, alp_size);
+        let alp_compressed = compress_alp_with_ffor(&encoded, &exceptions);
+        let alp_ratio = compression_ratio(original_size, alp_compressed.len());
 
         // ALP-RD compression
         let rd_encoder = RDEncoder::new(&data[..]);
         let split = rd_encoder.split(&data);
-        let (left_parts, left_dict, left_exceptions, _right_parts, right_bit_width) = split.into_parts();
-        let exception_count = count_exceptions(&left_exceptions, left_parts.len());
-        let alprd_breakdown = calculate_alprd_compressed_size::<f64>(
+        let (left_parts, left_dict, left_exceptions, right_parts, right_bit_width) = split.into_parts();
+        let alprd_compressed = compress_alprd_with_bitpacking(
             &left_parts,
-            left_dict.len(),
-            exception_count,
+            &left_dict,
+            &left_exceptions,
+            &right_parts,
             right_bit_width,
         );
-        let alprd_ratio = compression_ratio(original_size, alprd_breakdown.total_bytes);
+        let alprd_ratio = compression_ratio(original_size, alprd_compressed.len());
 
         // Determine winner
         let winner = {
@@ -159,18 +159,21 @@ fn main() {
     }
     let gorilla_duration = start.elapsed();
 
-    // Benchmark Classic ALP
+    // Benchmark Classic ALP (with FFOR compression)
     let start = Instant::now();
     for _ in 0..iterations {
-        let _ = encode(&perf_data, None);
+        let (_exponents, encoded, _exceptions_pos, exceptions) = encode(&perf_data, None);
+        let _ = compress_alp_with_ffor(&encoded, &exceptions);
     }
     let alp_duration = start.elapsed();
 
-    // Benchmark ALP-RD (build encoder once, reuse for all iterations)
+    // Benchmark ALP-RD (build encoder once, reuse for all iterations, with bit-packing)
     let rd_encoder = RDEncoder::new(&perf_data[..]);
     let start = Instant::now();
     for _ in 0..iterations {
-        let _ = rd_encoder.split(&perf_data);
+        let split = rd_encoder.split(&perf_data);
+        let (left_parts, left_dict, left_exceptions, right_parts, right_bit_width) = split.into_parts();
+        let _ = compress_alprd_with_bitpacking(&left_parts, &left_dict, &left_exceptions, &right_parts, right_bit_width);
     }
     let alprd_duration = start.elapsed();
 
@@ -216,37 +219,38 @@ fn main() {
 
             // Classic ALP compression
             let (_exponents, encoded, _exceptions_pos, exceptions) = encode(&bitcoin_data, None);
+            let alp_compressed = compress_alp_with_ffor(&encoded, &exceptions);
             let breakdown = calculate_alp_compressed_size_detailed(&encoded, &exceptions);
 
             println!("\nClassic ALP Compression:");
-            println!("  Compressed size: {} bytes", breakdown.total_bytes);
+            println!("  Compressed size: {} bytes", alp_compressed.len());
             println!("  Compression ratio: {:.1}%",
-                (breakdown.total_bytes as f64 / (bitcoin_data.len() * 8) as f64) * 100.0);
+                (alp_compressed.len() as f64 / (bitcoin_data.len() * 8) as f64) * 100.0);
             println!("  Bit width: {} bits", breakdown.bit_width);
-            println!("  Bits per value: {:.2} bits", breakdown.bits_per_value);
+            println!("  Bits per value: {:.2} bits (estimated)", breakdown.bits_per_value);
+            println!("  Actual bits per value: {:.2} bits", (alp_compressed.len() * 8) as f64 / bitcoin_data.len() as f64);
             println!("  Exceptions: {}", breakdown.num_exceptions);
 
             // ALP-RD compression
             let rd_encoder = RDEncoder::new(&bitcoin_data[..]);
             let split = rd_encoder.split(&bitcoin_data);
-            let (left_parts, left_dict, left_exceptions, _right_parts, right_bit_width) = split.into_parts();
-            let exception_count = count_exceptions(&left_exceptions, left_parts.len());
-            let alprd_breakdown = calculate_alprd_compressed_size::<f64>(
+            let (left_parts, left_dict, left_exceptions, right_parts, right_bit_width) = split.into_parts();
+            let alprd_compressed = compress_alprd_with_bitpacking(
                 &left_parts,
-                left_dict.len(),
-                exception_count,
+                &left_dict,
+                &left_exceptions,
+                &right_parts,
                 right_bit_width,
             );
 
             println!("\nALP-RD Compression:");
-            println!("  Compressed size: {} bytes", alprd_breakdown.total_bytes);
+            println!("  Compressed size: {} bytes", alprd_compressed.len());
             println!("  Compression ratio: {:.1}%",
-                (alprd_breakdown.total_bytes as f64 / (bitcoin_data.len() * 8) as f64) * 100.0);
-            println!("  Left bit width: {} bits", alprd_breakdown.left_bit_width);
-            println!("  Right bit width: {} bits", alprd_breakdown.right_bit_width);
-            println!("  Bits per value: {:.2} bits", alprd_breakdown.bits_per_value);
-            println!("  Dictionary size: {}", alprd_breakdown.left_dict_size);
-            println!("  Exceptions: {}", alprd_breakdown.left_exceptions_count);
+                (alprd_compressed.len() as f64 / (bitcoin_data.len() * 8) as f64) * 100.0);
+            println!("  Dictionary size: {}", left_dict.len());
+            println!("  Actual bits per value: {:.2} bits", (alprd_compressed.len() * 8) as f64 / bitcoin_data.len() as f64);
+            println!("  Right bit width: {} bits", right_bit_width);
+            println!("  Exceptions: {}", count_exceptions(&left_exceptions, left_parts.len()));
 
             // Gorilla compression
             let gorilla_compressed = gorilla::compress(&bitcoin_data);

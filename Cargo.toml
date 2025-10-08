@@ -8,6 +8,7 @@ alp = { git = "https://github.com/spiraldb/alp" }
 arrow = "53.0"
 bytes = "1.5"
 rand = "0.8"
+fastlanes = "0.2"
 
 [dev-dependencies]
 criterion = "0.5"
