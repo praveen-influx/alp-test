@@ -256,12 +256,4 @@ fn main() {
                 (gorilla_compressed.len() as f64 / (bitcoin_data.len() * 8) as f64) * 100.0);
         }
     }
-
-    println!("\n=== Summary ===");
-    println!("• All algorithms are LOSSLESS (bit-exact preservation)");
-    println!("• Gorilla excels with: time-series data with gradual changes (XOR-based)");
-    println!("• Classic ALP excels with: decimal-like data with low precision (e.g., prices with 2 decimals)");
-    println!("• ALP-RD excels with: high-precision floats using full precision (dictionary encoding)");
-    println!("• For random data: all algorithms have poor compression");
-    println!("• Performance: ALP typically 7-8x faster than Gorilla for encoding");
 }
