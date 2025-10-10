@@ -143,7 +143,9 @@ pub fn compress(values: &[f64]) -> Vec<u8> {
                     bit_writer.write_bit(false).unwrap();
                     let bits_to_write = 64 - prev_leading_zeros - prev_trailing_zeros;
                     let shifted_xor = xor >> prev_trailing_zeros;
-                    bit_writer.write_bits(shifted_xor, bits_to_write as usize).unwrap();
+                    bit_writer
+                        .write_bits(shifted_xor, bits_to_write as usize)
+                        .unwrap();
                 } else {
                     // Need new bit range
                     bit_writer.write_bit(true).unwrap();
@@ -158,7 +160,9 @@ pub fn compress(values: &[f64]) -> Vec<u8> {
 
                     // Write the meaningful bits
                     let shifted_xor = xor >> trailing_zeros;
-                    bit_writer.write_bits(shifted_xor, meaningful_bits as usize).unwrap();
+                    bit_writer
+                        .write_bits(shifted_xor, meaningful_bits as usize)
+                        .unwrap();
 
                     prev_leading_zeros = leading_zeros;
                     prev_trailing_zeros = trailing_zeros;
@@ -218,12 +222,16 @@ pub fn decompress(data: &[u8], count: usize) -> Vec<f64> {
                     let meaningful_bits_count = encoded_length + 1;
 
                     if leading_zeros + meaningful_bits_count > 64 {
-                        panic!("Invalid bit range: {} leading + {} meaningful > 64",
-                               leading_zeros, meaningful_bits_count);
+                        panic!(
+                            "Invalid bit range: {} leading + {} meaningful > 64",
+                            leading_zeros, meaningful_bits_count
+                        );
                     }
 
                     let trailing_zeros = 64 - leading_zeros - meaningful_bits_count;
-                    let meaningful_bits = bit_reader.read_bits(meaningful_bits_count as usize).unwrap();
+                    let meaningful_bits = bit_reader
+                        .read_bits(meaningful_bits_count as usize)
+                        .unwrap();
 
                     if trailing_zeros >= 64 {
                         panic!("Invalid trailing_zeros: {}", trailing_zeros);
@@ -313,3 +321,4 @@ mod tests {
         }
     }
 }
+

@@ -1,18 +1,80 @@
 pub mod gorilla;
 
-use rand::Rng;
 use alp::ALPRDFloat;
 use fastlanes::BitPacking;
+use rand::Rng;
 
 /// Generate different types of test data for compression testing
 pub struct TestDataGenerator;
 
 impl TestDataGenerator {
-    /// Generate time series data with small variations
+    /// Generate time series data with small variations (UNREALISTIC - too smooth)
     pub fn time_series(size: usize) -> Vec<f64> {
         (0..size)
             .map(|i| 100.0 + (i as f64) * 0.01 + (i as f64 * 0.1).sin() * 0.001)
             .collect()
+    }
+
+    /// Generate realistic multi-sensor data (interleaved sensors with different characteristics)
+    pub fn realistic_multi_sensor(size: usize) -> Vec<f64> {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let mut data = Vec::with_capacity(size);
+
+        // Simulate 4 different sensors writing in round-robin fashion
+        // Sensor 1: Temperature (20-25°C, 1 decimal precision)
+        // Sensor 2: Pressure (950-1050 hPa, 2 decimal precision)
+        // Sensor 3: Voltage (3.2-3.4V, 3 decimal precision)
+        // Sensor 4: Current (0.1-2.5A, 2 decimal precision with occasional spikes)
+
+        let mut temp_base: f64 = 22.5;
+        let mut pressure_base: f64 = 1013.25;
+        let mut voltage_base: f64 = 3.3;
+        let mut current_base: f64 = 0.8;
+
+        for i in 0..size {
+            let sensor_id = i % 4;
+
+            let value = match sensor_id {
+                0 => {
+                    // Temperature: slow drift + noise
+                    temp_base += rng.gen_range(-0.1..0.1);
+                    temp_base = temp_base.clamp(20.0, 25.0);
+                    (temp_base * 10.0).round() / 10.0 // 1 decimal
+                }
+                1 => {
+                    // Pressure: stable with occasional step changes
+                    if rng.gen_bool(0.01) {
+                        pressure_base += rng.gen_range(-5.0..5.0);
+                    }
+                    pressure_base += rng.gen_range(-0.2..0.2);
+                    pressure_base = pressure_base.clamp(950.0, 1050.0);
+                    (pressure_base * 100.0).round() / 100.0 // 2 decimals
+                }
+                2 => {
+                    // Voltage: very precise, narrow range
+                    voltage_base += rng.gen_range(-0.01..0.01);
+                    voltage_base = voltage_base.clamp(3.2, 3.4);
+                    (voltage_base * 1000.0).round() / 1000.0 // 3 decimals
+                }
+                3 => {
+                    // Current: variable with spikes
+                    if rng.gen_bool(0.05) {
+                        // 5% chance of spike
+                        current_base = rng.gen_range(2.0..2.5);
+                    } else {
+                        current_base = current_base * 0.9 + rng.gen_range(0.5..1.2) * 0.1;
+                    }
+                    current_base = current_base.clamp(0.1, 2.5);
+                    (current_base * 100.0).round() / 100.0 // 2 decimals
+                }
+                _ => unreachable!(),
+            };
+
+            data.push(value);
+        }
+
+        data
     }
 
     /// Generate sensor data with noise
@@ -91,10 +153,7 @@ pub fn compression_ratio(original_size: usize, compressed_size: usize) -> f64 {
 /// Calculate the actual compressed size of ALP-encoded data using bit-packing
 /// This matches the C++ ALP implementation from https://github.com/cwida/ALP
 /// Formula: bits_per_value = bit_width + (exceptions * 80 / vector_size) + overhead_per_vector
-pub fn calculate_alp_compressed_size(
-    encoded: &[i64],
-    exceptions: &[f64],
-) -> usize {
+pub fn calculate_alp_compressed_size(encoded: &[i64], exceptions: &[f64]) -> usize {
     calculate_alp_compressed_size_detailed(encoded, exceptions).total_bytes
 }
 
@@ -131,8 +190,9 @@ pub fn calculate_alp_compressed_size_detailed(
     let bits_per_value = if encoded.is_empty() {
         0.0
     } else {
-        let exception_bits_per_value =
-            (exceptions.len() as f64 * (EXCEPTION_SIZE_BITS + POSITION_SIZE_BITS) as f64) / encoded.len() as f64;
+        let exception_bits_per_value = (exceptions.len() as f64
+            * (EXCEPTION_SIZE_BITS + POSITION_SIZE_BITS) as f64)
+            / encoded.len() as f64;
         let overhead_bits_per_value =
             (num_vectors as f64 * OVERHEAD_PER_VECTOR_BITS) / encoded.len() as f64;
 
@@ -171,10 +231,14 @@ pub struct AlpSizeBreakdown {
 /// Compress ALP-encoded integers using Frame-of-Reference + Bit-Packing (FFOR)
 /// This matches the C++ ALP implementation which applies FFOR after encoding
 /// Returns actual compressed bytes for fair comparison with Gorilla
-pub fn compress_alp_with_ffor(encoded: &[i64], exceptions: &[f64]) -> Vec<u8> {
+pub fn compress_alp_with_ffor(exponents: alp::Exponents, encoded: &[i64], exception_positions: &[u64], exceptions: &[f64]) -> Vec<u8> {
     const CHUNK_SIZE: usize = 1024;
 
     let mut output = Vec::new();
+
+    // Write exponents (2 bytes)
+    output.push(exponents.e);
+    output.push(exponents.f);
 
     // Write number of values (8 bytes)
     output.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
@@ -240,12 +304,93 @@ pub fn compress_alp_with_ffor(encoded: &[i64], exceptions: &[f64]) -> Vec<u8> {
     // Write exception count (4 bytes)
     output.extend_from_slice(&(exceptions.len() as u32).to_le_bytes());
 
-    // Write exceptions as raw f64 bytes
-    for &exc in exceptions {
-        output.extend_from_slice(&exc.to_le_bytes());
+    // Write exception positions and values
+    for (&pos, &exc) in exception_positions.iter().zip(exceptions.iter()) {
+        output.extend_from_slice(&pos.to_le_bytes()); // 8 bytes
+        output.extend_from_slice(&exc.to_le_bytes()); // 8 bytes
     }
 
     output
+}
+
+/// Decompress ALP data that was compressed with FFOR
+/// Returns the original f64 values
+pub fn decompress_alp_with_ffor(compressed: &[u8]) -> Vec<f64> {
+    const CHUNK_SIZE: usize = 1024;
+    let mut cursor = 0;
+
+    // Read exponents (2 bytes)
+    let e = compressed[cursor];
+    cursor += 1;
+    let f = compressed[cursor];
+    cursor += 1;
+    let exponents = alp::Exponents { e, f };
+
+    // Read number of values (8 bytes)
+    let num_values = u64::from_le_bytes(compressed[cursor..cursor+8].try_into().unwrap()) as usize;
+    cursor += 8;
+
+    // Decompress encoded values
+    let mut encoded = Vec::with_capacity(num_values);
+    let num_chunks = num_values.div_ceil(CHUNK_SIZE);
+
+    for _ in 0..num_chunks {
+        // Read chunk header: min (8 bytes) + bit_width (1 byte) + chunk_len (2 bytes)
+        let min_val = i64::from_le_bytes(compressed[cursor..cursor+8].try_into().unwrap());
+        cursor += 8;
+        let bit_width = compressed[cursor] as usize;
+        cursor += 1;
+        let chunk_len = u16::from_le_bytes(compressed[cursor..cursor+2].try_into().unwrap()) as usize;
+        cursor += 2;
+
+        if bit_width == 0 {
+            // All values are identical (equal to min_val)
+            encoded.extend(std::iter::repeat(min_val).take(chunk_len));
+            continue;
+        }
+
+        // Calculate packed size
+        let packed_size = (CHUNK_SIZE * bit_width + 63) / 64;
+
+        // Read packed data
+        let mut packed = vec![0u64; packed_size];
+        for i in 0..packed_size {
+            packed[i] = u64::from_le_bytes(compressed[cursor..cursor+8].try_into().unwrap());
+            cursor += 8;
+        }
+
+        // Unpack the data
+        let mut unpacked = [0u64; CHUNK_SIZE];
+        unsafe {
+            BitPacking::unchecked_unpack(bit_width, &packed, &mut unpacked);
+        }
+
+        // Apply inverse frame-of-reference (add min back) and convert to i64
+        for i in 0..chunk_len {
+            let val = (unpacked[i] as i64).wrapping_add(min_val);
+            encoded.push(val);
+        }
+    }
+
+    // Read exception count (4 bytes)
+    let exception_count = u32::from_le_bytes(compressed[cursor..cursor+4].try_into().unwrap()) as usize;
+    cursor += 4;
+
+    // Decode all values using ALP decode_single
+    let mut decoded: Vec<f64> = encoded.iter()
+        .map(|&enc| alp::decode_single::<f64>(enc, exponents))
+        .collect();
+
+    // Read and apply exceptions
+    for _ in 0..exception_count {
+        let pos = u64::from_le_bytes(compressed[cursor..cursor+8].try_into().unwrap()) as usize;
+        cursor += 8;
+        let exc = f64::from_le_bytes(compressed[cursor..cursor+8].try_into().unwrap());
+        cursor += 8;
+        decoded[pos] = exc;
+    }
+
+    decoded
 }
 
 /// Compress ALP-RD encoded data using bit-packing
@@ -380,16 +525,17 @@ pub fn decompress_alprd_with_bitpacking(compressed: &[u8]) -> Vec<f64> {
     let mut cursor = 0;
 
     // Read number of values (8 bytes)
-    let num_values = u64::from_le_bytes(compressed[cursor..cursor+8].try_into().unwrap()) as usize;
+    let num_values =
+        u64::from_le_bytes(compressed[cursor..cursor + 8].try_into().unwrap()) as usize;
     cursor += 8;
 
     // Read dictionary size (2 bytes) and dictionary values
-    let dict_size = u16::from_le_bytes(compressed[cursor..cursor+2].try_into().unwrap()) as usize;
+    let dict_size = u16::from_le_bytes(compressed[cursor..cursor + 2].try_into().unwrap()) as usize;
     cursor += 2;
 
     let mut left_dict = Vec::with_capacity(dict_size);
     for _ in 0..dict_size {
-        let val = u16::from_le_bytes(compressed[cursor..cursor+2].try_into().unwrap());
+        let val = u16::from_le_bytes(compressed[cursor..cursor + 2].try_into().unwrap());
         left_dict.push(val);
         cursor += 2;
     }
@@ -411,7 +557,8 @@ pub fn decompress_alprd_with_bitpacking(compressed: &[u8]) -> Vec<f64> {
 
     for _ in 0..num_left_chunks {
         // Read chunk length (2 bytes)
-        let chunk_len = u16::from_le_bytes(compressed[cursor..cursor+2].try_into().unwrap()) as usize;
+        let chunk_len =
+            u16::from_le_bytes(compressed[cursor..cursor + 2].try_into().unwrap()) as usize;
         cursor += 2;
 
         if left_bit_width == 0 {
@@ -426,7 +573,7 @@ pub fn decompress_alprd_with_bitpacking(compressed: &[u8]) -> Vec<f64> {
         // Read packed data
         let mut packed = vec![0u16; packed_size];
         for i in 0..packed_size {
-            packed[i] = u16::from_le_bytes(compressed[cursor..cursor+2].try_into().unwrap());
+            packed[i] = u16::from_le_bytes(compressed[cursor..cursor + 2].try_into().unwrap());
             cursor += 2;
         }
 
@@ -440,22 +587,30 @@ pub fn decompress_alprd_with_bitpacking(compressed: &[u8]) -> Vec<f64> {
     }
 
     // Read exception count (4 bytes)
-    let exception_count = u32::from_le_bytes(compressed[cursor..cursor+4].try_into().unwrap()) as usize;
+    let exception_count =
+        u32::from_le_bytes(compressed[cursor..cursor + 4].try_into().unwrap()) as usize;
     cursor += 4;
 
-    // Read and apply exceptions
+    // Read exceptions and mark positions
+    let mut exception_values = std::collections::HashMap::new();
     for _ in 0..exception_count {
-        let pos = u16::from_le_bytes(compressed[cursor..cursor+2].try_into().unwrap()) as usize;
+        let pos = u16::from_le_bytes(compressed[cursor..cursor + 2].try_into().unwrap()) as usize;
         cursor += 2;
-        let val = u16::from_le_bytes(compressed[cursor..cursor+2].try_into().unwrap());
+        let val = u16::from_le_bytes(compressed[cursor..cursor + 2].try_into().unwrap());
         cursor += 2;
-        left_parts[pos] = val;
+        exception_values.insert(pos, val);
     }
 
-    // Apply dictionary lookup to left_parts
+    // Apply dictionary lookup to left_parts, or use exception value
     let mut left_parts_decoded = Vec::with_capacity(num_values);
-    for &code in &left_parts {
-        left_parts_decoded.push(left_dict[code as usize] as u64);
+    for (i, &code) in left_parts.iter().enumerate() {
+        if let Some(&exc_val) = exception_values.get(&i) {
+            // This position had an exception - use the original left value directly
+            left_parts_decoded.push(exc_val as u64);
+        } else {
+            // Normal dictionary lookup
+            left_parts_decoded.push(left_dict[code as usize] as u64);
+        }
     }
 
     // Decompress right_parts
@@ -464,7 +619,8 @@ pub fn decompress_alprd_with_bitpacking(compressed: &[u8]) -> Vec<f64> {
 
     for _ in 0..num_right_chunks {
         // Read chunk length (2 bytes)
-        let chunk_len = u16::from_le_bytes(compressed[cursor..cursor+2].try_into().unwrap()) as usize;
+        let chunk_len =
+            u16::from_le_bytes(compressed[cursor..cursor + 2].try_into().unwrap()) as usize;
         cursor += 2;
 
         if right_bit_width == 0 {
@@ -479,7 +635,7 @@ pub fn decompress_alprd_with_bitpacking(compressed: &[u8]) -> Vec<f64> {
         // Read packed data
         let mut packed = vec![0u64; packed_size];
         for i in 0..packed_size {
-            packed[i] = u64::from_le_bytes(compressed[cursor..cursor+8].try_into().unwrap());
+            packed[i] = u64::from_le_bytes(compressed[cursor..cursor + 8].try_into().unwrap());
             cursor += 8;
         }
 
@@ -514,7 +670,9 @@ pub fn count_exceptions(exceptions: &alp::Exceptions<u16>, vector_len: usize) ->
     exceptions.apply(&mut test_vec);
 
     // Count how many positions changed
-    test_vec.iter().zip(original_vec.iter())
+    test_vec
+        .iter()
+        .zip(original_vec.iter())
         .filter(|(a, b)| a != b)
         .count()
 }
@@ -546,8 +704,7 @@ where
     };
 
     // ALP-RD overhead per value = (dictionary_size * 16 bits) / rowgroup_size
-    let alprd_overhead_bits_per_value =
-        (MAX_RD_DICTIONARY_SIZE * 16) as f64 / ROWGROUP_SIZE as f64;
+    let alprd_overhead_bits_per_value = (MAX_RD_DICTIONARY_SIZE * 16) as f64 / ROWGROUP_SIZE as f64;
 
     // Exception overhead per value
     let exception_bits_per_value = if num_values == 0 {
@@ -677,8 +834,14 @@ mod correctness_tests {
             if orig.is_nan() {
                 assert!(decomp.is_nan(), "NaN not preserved at index {}", i);
             } else {
-                assert_eq!(orig.to_bits(), decomp.to_bits(),
-                    "Special value mismatch at index {}: {} vs {}", i, orig, decomp);
+                assert_eq!(
+                    orig.to_bits(),
+                    decomp.to_bits(),
+                    "Special value mismatch at index {}: {} vs {}",
+                    i,
+                    orig,
+                    decomp
+                );
             }
         }
 
@@ -751,9 +914,14 @@ mod correctness_tests {
 
         // Verify sign bit is preserved
         for (i, (orig, decomp)) in data.iter().zip(gorilla_decompressed.iter()).enumerate() {
-            assert_eq!(orig.to_bits(), decomp.to_bits(),
+            assert_eq!(
+                orig.to_bits(),
+                decomp.to_bits(),
                 "Sign bit not preserved at index {}: {:064b} vs {:064b}",
-                i, orig.to_bits(), decomp.to_bits());
+                i,
+                orig.to_bits(),
+                decomp.to_bits()
+            );
         }
 
         // Test ALP
@@ -786,6 +954,29 @@ mod correctness_tests {
     }
 
     #[test]
+    fn test_alp_roundtrip() {
+        use alp::encode;
+
+        // Test with time series data
+        let data = TestDataGenerator::time_series(1000);
+
+        // Encode with Classic ALP
+        let (exponents, encoded, exceptions_pos, exceptions) = encode(&data, None);
+
+        // Compress to bytes
+        let compressed = compress_alp_with_ffor(exponents, &encoded, &exceptions_pos, &exceptions);
+
+        // Decompress
+        let decompressed = decompress_alp_with_ffor(&compressed);
+
+        // Verify bit-exact equality
+        verify_bit_exact_equality(&data, &decompressed)
+            .expect("Classic ALP compression should be lossless");
+
+        println!("Classic ALP round-trip correctness: PASSED");
+    }
+
+    #[test]
     fn test_alprd_roundtrip() {
         use alp::RDEncoder;
 
@@ -795,7 +986,8 @@ mod correctness_tests {
         // Encode with ALP-RD
         let rd_encoder = RDEncoder::new(&data[..]);
         let split = rd_encoder.split(&data);
-        let (left_parts, left_dict, left_exceptions, right_parts, right_bit_width) = split.into_parts();
+        let (left_parts, left_dict, left_exceptions, right_parts, right_bit_width) =
+            split.into_parts();
 
         // Compress to bytes
         let compressed = compress_alprd_with_bitpacking(
@@ -831,7 +1023,8 @@ mod correctness_tests {
                 // Encode with ALP-RD
                 let rd_encoder = RDEncoder::new(&bitcoin_data[..]);
                 let split = rd_encoder.split(&bitcoin_data);
-                let (left_parts, left_dict, left_exceptions, right_parts, right_bit_width) = split.into_parts();
+                let (left_parts, left_dict, left_exceptions, right_parts, right_bit_width) =
+                    split.into_parts();
 
                 // Compress to bytes
                 let compressed = compress_alprd_with_bitpacking(
@@ -854,3 +1047,4 @@ mod correctness_tests {
         }
     }
 }
+
