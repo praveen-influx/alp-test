@@ -554,10 +554,11 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "fastalp"
-version = "0.1.30"
+version = "0.1.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85f6325b938ea2ab39386dcb02141909ac74b1ef7ec95e87ed5a9ffa0cac2dd7"
+checksum = "e25e7bfb5407c30e0f22524009c76231286b47c96c23929843f67bda0ff7009e"
 dependencies = [
+ "fearless_simd",
  "thiserror",
 ]
 
@@ -573,6 +574,12 @@ dependencies = [
  "paste",
  "seq-macro",
 ]
+
+[[package]]
+name = "fearless_simd"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4beca3cb2444e3304ac30843cc091f44ed58932353cd492ce740067bfce6b12"
 
 [[package]]
 name = "find-msvc-tools"
