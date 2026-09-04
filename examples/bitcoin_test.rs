@@ -1,4 +1,4 @@
-use alp::{encode};
+use alp::encode;
 use alp_test::calculate_alp_compressed_size_detailed;
 use std::fs;
 
@@ -13,7 +13,11 @@ fn main() {
     println!("Bitcoin Price Data Test");
     println!("=======================");
     println!("Number of values: {}", data.len());
-    println!("Original size: {} bytes ({} KB)", data.len() * 8, (data.len() * 8) / 1024);
+    println!(
+        "Original size: {} bytes ({} KB)",
+        data.len() * 8,
+        (data.len() * 8) / 1024
+    );
 
     // Show first few values
     println!("\nFirst 10 values:");
@@ -47,10 +51,18 @@ fn main() {
     println!();
     println!("Compressed size:");
     println!("  Total bits: {} bits", breakdown.total_bits);
-    println!("  Total bytes: {} bytes ({:.2} KB)", breakdown.total_bytes, breakdown.total_bytes as f64 / 1024.0);
+    println!(
+        "  Total bytes: {} bytes ({:.2} KB)",
+        breakdown.total_bytes,
+        breakdown.total_bytes as f64 / 1024.0
+    );
     println!();
-    println!("Compression ratio: {:.2}%",
-        (breakdown.total_bytes as f64 / (data.len() * 8) as f64) * 100.0);
-    println!("Space saved: {:.2}%",
-        (1.0 - (breakdown.total_bytes as f64 / (data.len() * 8) as f64)) * 100.0);
+    println!(
+        "Compression ratio: {:.2}%",
+        (breakdown.total_bytes as f64 / (data.len() * 8) as f64) * 100.0
+    );
+    println!(
+        "Space saved: {:.2}%",
+        (1.0 - (breakdown.total_bytes as f64 / (data.len() * 8) as f64)) * 100.0
+    );
 }

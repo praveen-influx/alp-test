@@ -1,7 +1,7 @@
 use alp::{RDEncoder, encode};
 use alp_test::{
-    TestDataGenerator, compress_alp_with_ffor, compress_alprd_with_bitpacking,
-    compression_ratio, decompress_alp_with_ffor, decompress_alprd_with_bitpacking, gorilla,
+    TestDataGenerator, compress_alp_with_ffor, compress_alprd_with_bitpacking, compression_ratio,
+    decompress_alp_with_ffor, decompress_alprd_with_bitpacking, gorilla,
 };
 use std::time::Instant;
 
@@ -69,7 +69,8 @@ fn main() {
         let alp_compress_time = start.elapsed();
 
         let (exponents, encoded, exceptions_pos, exceptions) = encode(&data, None);
-        let alp_compressed = compress_alp_with_ffor(exponents, &encoded, &exceptions_pos, &exceptions);
+        let alp_compressed =
+            compress_alp_with_ffor(exponents, &encoded, &exceptions_pos, &exceptions);
 
         let start = Instant::now();
         for _ in 0..iterations {
@@ -86,15 +87,29 @@ fn main() {
         for _ in 0..iterations {
             let rd_encoder = RDEncoder::new(&data[..]);
             let split = rd_encoder.split(&data);
-            let (left_parts, left_dict, left_exceptions, right_parts, right_bit_width) = split.into_parts();
-            let _ = compress_alprd_with_bitpacking(&left_parts, &left_dict, &left_exceptions, &right_parts, right_bit_width);
+            let (left_parts, left_dict, left_exceptions, right_parts, right_bit_width) =
+                split.into_parts();
+            let _ = compress_alprd_with_bitpacking(
+                &left_parts,
+                &left_dict,
+                &left_exceptions,
+                &right_parts,
+                right_bit_width,
+            );
         }
         let alprd_compress_time = start.elapsed();
 
         let rd_encoder = RDEncoder::new(&data[..]);
         let split = rd_encoder.split(&data);
-        let (left_parts, left_dict, left_exceptions, right_parts, right_bit_width) = split.into_parts();
-        let alprd_compressed = compress_alprd_with_bitpacking(&left_parts, &left_dict, &left_exceptions, &right_parts, right_bit_width);
+        let (left_parts, left_dict, left_exceptions, right_parts, right_bit_width) =
+            split.into_parts();
+        let alprd_compressed = compress_alprd_with_bitpacking(
+            &left_parts,
+            &left_dict,
+            &left_exceptions,
+            &right_parts,
+            right_bit_width,
+        );
 
         let start = Instant::now();
         for _ in 0..iterations {
@@ -106,16 +121,47 @@ fn main() {
         let alprd_compress_us = alprd_compress_time.as_micros() as f64 / iterations as f64;
         let alprd_decompress_us = alprd_decompress_time.as_micros() as f64 / iterations as f64;
 
+        // === FASTALP ===
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let _ = fastalp::compress(data);
+        }
+        let fastalp_compress_time = start.elapsed();
+        let fastalp_compressed = fastalp::compress(data);
+
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let _ = fastalp::decompress::<f64>(&fastalp_compressed).unwrap();
+        }
+        let fastalp_decompress_time = start.elapsed();
+
+        let fastalp_ratio = compression_ratio(original_size, fastalp_compressed.len());
+        let fastalp_compress_us = fastalp_compress_time.as_micros() as f64 / iterations as f64;
+        let fastalp_decompress_us = fastalp_decompress_time.as_micros() as f64 / iterations as f64;
+
         // Determine winners
-        let best_ratio = gorilla_ratio.min(alp_ratio).min(alprd_ratio);
-        let best_compress = gorilla_compress_us.min(alp_compress_us).min(alprd_compress_us);
-        let best_decompress = gorilla_decompress_us.min(alp_decompress_us).min(alprd_decompress_us);
+        let best_ratio = gorilla_ratio
+            .min(alp_ratio)
+            .min(alprd_ratio)
+            .min(fastalp_ratio);
+        let best_compress = gorilla_compress_us
+            .min(alp_compress_us)
+            .min(alprd_compress_us)
+            .min(fastalp_compress_us);
+        let best_decompress = gorilla_decompress_us
+            .min(alp_decompress_us)
+            .min(alprd_decompress_us)
+            .min(fastalp_decompress_us);
 
         // Print table
         println!("{}", name);
         println!();
-        println!("| Metric              | Gorilla | ALP Classic | ALP-RD  | Winner        |");
-        println!("|---------------------|---------|-------------|---------|---------------|");
+        println!(
+            "| Metric              | Gorilla | ALP Classic | ALP-RD  | fastalp | Winner        |"
+        );
+        println!(
+            "|---------------------|---------|-------------|---------|---------|---------------|"
+        );
 
         // Compression Ratio row
         print!("| Compression Ratio   |");
@@ -134,9 +180,16 @@ fn main() {
         } else {
             print!(" {:>6.1}% |", alprd_ratio);
         }
+        if fastalp_ratio > 100.0 {
+            print!(" {:>5.1}% 💥|", fastalp_ratio);
+        } else {
+            print!(" {:>6.1}% |", fastalp_ratio);
+        }
 
         if (gorilla_ratio - best_ratio).abs() < 0.1 {
             println!(" Gorilla ✅     |");
+        } else if (fastalp_ratio - best_ratio).abs() < 0.1 {
+            println!(" fastalp ✅     |");
         } else if (alp_ratio - best_ratio).abs() < 0.1 {
             println!(" ALP Classic ✅ |");
         } else {
@@ -147,9 +200,12 @@ fn main() {
         print!("| Compression Speed   | {:>5.0} µs |", gorilla_compress_us);
         print!(" {:>9.0} µs |", alp_compress_us);
         print!(" {:>5.0} µs |", alprd_compress_us);
+        print!(" {:>5.0} µs |", fastalp_compress_us);
 
         if (gorilla_compress_us - best_compress).abs() < 1.0 {
             println!(" Gorilla ✅     |");
+        } else if (fastalp_compress_us - best_compress).abs() < 1.0 {
+            println!(" fastalp ✅     |");
         } else if (alp_compress_us - best_compress).abs() < 1.0 {
             println!(" ALP Classic ✅ |");
         } else {
@@ -157,12 +213,18 @@ fn main() {
         }
 
         // Decompression Speed row
-        print!("| Decompression Speed | {:>5.0} µs |", gorilla_decompress_us);
+        print!(
+            "| Decompression Speed | {:>5.0} µs |",
+            gorilla_decompress_us
+        );
         print!(" {:>9.0} µs |", alp_decompress_us);
         print!(" {:>5.0} µs |", alprd_decompress_us);
+        print!(" {:>5.0} µs |", fastalp_decompress_us);
 
         if (gorilla_decompress_us - best_decompress).abs() < 1.0 {
             println!(" Gorilla ✅     |");
+        } else if (fastalp_decompress_us - best_decompress).abs() < 1.0 {
+            println!(" fastalp ✅     |");
         } else if (alp_decompress_us - best_decompress).abs() < 1.0 {
             println!(" ALP Classic ✅ |");
         } else {
@@ -180,7 +242,9 @@ fn main() {
             }
             "sensor" => {
                 if gorilla_ratio < alp_ratio && gorilla_ratio < alprd_ratio {
-                    println!("Recommendation: Gorilla for best compression OR ALP Classic for speed");
+                    println!(
+                        "Recommendation: Gorilla for best compression OR ALP Classic for speed"
+                    );
                     println!("  • Gorilla: Best compression ratio");
                     println!("  • ALP Classic: ~5x faster compress, ~20x faster decompress");
                 } else {

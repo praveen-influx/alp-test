@@ -231,7 +231,12 @@ pub struct AlpSizeBreakdown {
 /// Compress ALP-encoded integers using Frame-of-Reference + Bit-Packing (FFOR)
 /// This matches the C++ ALP implementation which applies FFOR after encoding
 /// Returns actual compressed bytes for fair comparison with Gorilla
-pub fn compress_alp_with_ffor(exponents: alp::Exponents, encoded: &[i64], exception_positions: &[u64], exceptions: &[f64]) -> Vec<u8> {
+pub fn compress_alp_with_ffor(
+    exponents: alp::Exponents,
+    encoded: &[i64],
+    exception_positions: &[u64],
+    exceptions: &[f64],
+) -> Vec<u8> {
     const CHUNK_SIZE: usize = 1024;
 
     let mut output = Vec::new();
@@ -327,7 +332,8 @@ pub fn decompress_alp_with_ffor(compressed: &[u8]) -> Vec<f64> {
     let exponents = alp::Exponents { e, f };
 
     // Read number of values (8 bytes)
-    let num_values = u64::from_le_bytes(compressed[cursor..cursor+8].try_into().unwrap()) as usize;
+    let num_values =
+        u64::from_le_bytes(compressed[cursor..cursor + 8].try_into().unwrap()) as usize;
     cursor += 8;
 
     // Decompress encoded values
@@ -336,11 +342,12 @@ pub fn decompress_alp_with_ffor(compressed: &[u8]) -> Vec<f64> {
 
     for _ in 0..num_chunks {
         // Read chunk header: min (8 bytes) + bit_width (1 byte) + chunk_len (2 bytes)
-        let min_val = i64::from_le_bytes(compressed[cursor..cursor+8].try_into().unwrap());
+        let min_val = i64::from_le_bytes(compressed[cursor..cursor + 8].try_into().unwrap());
         cursor += 8;
         let bit_width = compressed[cursor] as usize;
         cursor += 1;
-        let chunk_len = u16::from_le_bytes(compressed[cursor..cursor+2].try_into().unwrap()) as usize;
+        let chunk_len =
+            u16::from_le_bytes(compressed[cursor..cursor + 2].try_into().unwrap()) as usize;
         cursor += 2;
 
         if bit_width == 0 {
@@ -355,7 +362,7 @@ pub fn decompress_alp_with_ffor(compressed: &[u8]) -> Vec<f64> {
         // Read packed data
         let mut packed = vec![0u64; packed_size];
         for i in 0..packed_size {
-            packed[i] = u64::from_le_bytes(compressed[cursor..cursor+8].try_into().unwrap());
+            packed[i] = u64::from_le_bytes(compressed[cursor..cursor + 8].try_into().unwrap());
             cursor += 8;
         }
 
@@ -373,19 +380,21 @@ pub fn decompress_alp_with_ffor(compressed: &[u8]) -> Vec<f64> {
     }
 
     // Read exception count (4 bytes)
-    let exception_count = u32::from_le_bytes(compressed[cursor..cursor+4].try_into().unwrap()) as usize;
+    let exception_count =
+        u32::from_le_bytes(compressed[cursor..cursor + 4].try_into().unwrap()) as usize;
     cursor += 4;
 
     // Decode all values using ALP decode_single
-    let mut decoded: Vec<f64> = encoded.iter()
+    let mut decoded: Vec<f64> = encoded
+        .iter()
         .map(|&enc| alp::decode_single::<f64>(enc, exponents))
         .collect();
 
     // Read and apply exceptions
     for _ in 0..exception_count {
-        let pos = u64::from_le_bytes(compressed[cursor..cursor+8].try_into().unwrap()) as usize;
+        let pos = u64::from_le_bytes(compressed[cursor..cursor + 8].try_into().unwrap()) as usize;
         cursor += 8;
-        let exc = f64::from_le_bytes(compressed[cursor..cursor+8].try_into().unwrap());
+        let exc = f64::from_le_bytes(compressed[cursor..cursor + 8].try_into().unwrap());
         cursor += 8;
         decoded[pos] = exc;
     }
@@ -1046,5 +1055,20 @@ mod correctness_tests {
             }
         }
     }
-}
 
+    #[test]
+    fn test_fastalp_roundtrip_all_datasets() {
+        let datasets = vec![
+            TestDataGenerator::realistic_multi_sensor(1024),
+            TestDataGenerator::sensor_data(1024),
+            TestDataGenerator::stock_prices(1024),
+            TestDataGenerator::identical_values(1024, 42.42),
+            TestDataGenerator::random_data(1024),
+        ];
+        for data in datasets {
+            let compressed = fastalp::compress(&data);
+            let decompressed = fastalp::decompress::<f64>(&compressed).expect("decompress failed");
+            verify_bit_exact_equality(&data, &decompressed).expect("fastalp should be lossless");
+        }
+    }
+}
